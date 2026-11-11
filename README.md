@@ -62,7 +62,7 @@ python manage.py runserver
 
 ## Cómo se usa
 
-Primero se registra a la persona en la sección Personas: se llenan sus datos y se mira a la cámara unos segundos mientras se toman las fotos. Después, en el Panel, cuando la persona aparece frente a la cámara se le marca la asistencia. El recuadro se pone amarillo mientras la está reconociendo y verde cuando ya se guardó.
+Primero se registra a la persona en la sección Personas: se llenan sus datos y se mira a la cámara unos segundos mientras se toman las muestras del rostro. Después, en el Panel, cuando la persona aparece frente a la cámara se le marca la asistencia. El recuadro se pone amarillo mientras la está reconociendo y verde cuando ya se guardó.
 
 ## Pruebas
 

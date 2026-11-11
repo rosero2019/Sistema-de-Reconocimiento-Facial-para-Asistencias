@@ -1,5 +1,7 @@
 """Casos de prueba. Ejecutar con: python manage.py test"""
+import time as reloj
 from datetime import datetime, time
+from unittest import mock
 
 import numpy as np
 from django.db import IntegrityError, transaction
@@ -10,6 +12,8 @@ from django.utils import timezone
 from . import servicios
 from .forms import PersonaForm
 from .models import Asistencia, Persona, Rostro
+from .vision import camara as modulo_camara
+from .vision.camara import Camara
 from .vision.galeria import Galeria
 from .vision.motor import similitud_coseno
 
@@ -103,3 +107,105 @@ class VistasTests(TestCase):
         respuesta = self.client.get(reverse("historial"), {"formato": "csv"})
         self.assertEqual(respuesta["Content-Type"], "text/csv; charset=utf-8")
         self.assertIn("Ana", respuesta.content.decode("utf-8"))
+
+
+class CapturaFalsa:
+    """Imita a cv2.VideoCapture para probar la captura sin una cámara real."""
+
+    abiertas = []
+
+    def __init__(self, indice, backend=None, falla_despues_de=None):
+        self.abierta = True
+        self.lecturas = 0
+        self.falla_despues_de = falla_despues_de
+        CapturaFalsa.abiertas.append(self)
+
+    def isOpened(self):
+        return self.abierta
+
+    def set(self, propiedad, valor):
+        return True
+
+    def read(self):
+        self.lecturas += 1
+        reloj.sleep(0.01)
+        if self.falla_despues_de is not None and self.lecturas > self.falla_despues_de:
+            return False, None
+        frame = np.zeros((48, 64, 3), dtype=np.uint8)
+        frame[:, :32] = 255  # mitad izquierda blanca
+        return True, frame
+
+    def release(self):
+        self.abierta = False
+
+
+def esperar(condicion, segundos=3.0):
+    limite = reloj.monotonic() + segundos
+    while reloj.monotonic() < limite:
+        if condicion():
+            return True
+        reloj.sleep(0.02)
+    return False
+
+
+class CamaraTests(TestCase):
+    """Pruebas de la captura de video en tiempo real con una cámara simulada."""
+
+    def setUp(self):
+        CapturaFalsa.abiertas = []
+
+    def test_lee_cuadros_con_efecto_espejo(self):
+        with mock.patch.object(modulo_camara.cv2, "VideoCapture", CapturaFalsa):
+            camara = Camara(0)
+            try:
+                self.assertTrue(esperar(lambda: camara.leer() is not None))
+                frame = camara.leer()
+                # Por el espejo, la mitad blanca pasa a la derecha
+                self.assertEqual(frame[0, -1, 0], 255)
+                self.assertEqual(frame[0, 0, 0], 0)
+                self.assertTrue(camara.conectada)
+            finally:
+                camara.liberar()
+
+    def test_leer_devuelve_una_copia(self):
+        with mock.patch.object(modulo_camara.cv2, "VideoCapture", CapturaFalsa):
+            camara = Camara(0)
+            try:
+                esperar(lambda: camara.leer() is not None)
+                frame = camara.leer()
+                frame[:] = 7
+                self.assertNotEqual(camara.leer()[0, 0, 0], 7)
+            finally:
+                camara.liberar()
+
+    def test_error_si_no_abre_la_camara(self):
+        class SinCamara(CapturaFalsa):
+            def isOpened(self):
+                return False
+
+        with mock.patch.object(modulo_camara.cv2, "VideoCapture", SinCamara):
+            with self.assertRaises(RuntimeError):
+                Camara(5)
+
+    def test_se_reconecta_si_la_camara_deja_de_responder(self):
+        def fabrica(indice, backend=None):
+            # La primera captura se "desconecta" a las 3 lecturas; las siguientes funcionan
+            return CapturaFalsa(indice, backend, falla_despues_de=3 if not CapturaFalsa.abiertas else None)
+
+        with mock.patch.object(modulo_camara.cv2, "VideoCapture", side_effect=fabrica), \
+                mock.patch.object(modulo_camara, "FALLOS_PARA_RECONECTAR", 3), \
+                mock.patch.object(modulo_camara, "ESPERA_RECONEXION", 0.01):
+            camara = Camara(0)
+            try:
+                self.assertTrue(esperar(lambda: camara.reconexiones == 1))
+                self.assertFalse(CapturaFalsa.abiertas[0].abierta)  # la vieja se liberó
+                self.assertTrue(esperar(lambda: camara.leer() is not None))
+            finally:
+                camara.liberar()
+
+    def test_liberar_detiene_y_suelta_la_camara(self):
+        with mock.patch.object(modulo_camara.cv2, "VideoCapture", CapturaFalsa):
+            camara = Camara(0)
+            camara.liberar()
+            self.assertFalse(camara._hilo.is_alive())
+            self.assertFalse(CapturaFalsa.abiertas[0].abierta)

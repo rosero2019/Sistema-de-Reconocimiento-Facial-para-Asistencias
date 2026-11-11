@@ -1,4 +1,5 @@
 """Une cámara + OpenCV + base de datos y produce el video anotado en tiempo real."""
+import functools
 import logging
 import threading
 import time
@@ -52,7 +53,10 @@ class Procesador:
         while True:
             frame = self.camara.leer()
             if frame is None:
-                time.sleep(0.05)
+                # Sin señal: se muestra un aviso en lugar de dejar el video congelado
+                with self._lock:
+                    self._jpeg = imagen_sin_senal()
+                time.sleep(0.2)
                 continue
             inicio = time.perf_counter()
             try:
@@ -128,7 +132,7 @@ class Procesador:
 
     def _dibujar_encabezado(self, frame, n_caras):
         ahora = timezone.localtime().strftime("%d/%m/%Y %H:%M:%S")
-        texto = f"{ahora} | Rostros: {n_caras} | FPS: {self.fps:.0f}"
+        texto = f"{ahora} | Rostros: {n_caras} | FPS: {self.fps:.0f} | Camara: {self.camara.fps:.0f} fps"
         cv2.rectangle(frame, (0, 0), (frame.shape[1], 28), (30, 30, 30), -1)
         cv2.putText(frame, texto, (10, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
 
@@ -152,6 +156,17 @@ class Procesador:
 
 
 # ---------------------------------------------------------------------------
+@functools.lru_cache(maxsize=1)
+def imagen_sin_senal() -> bytes:
+    """JPEG que se muestra mientras la cámara se conecta o se reconecta."""
+    imagen = np.full((480, 640, 3), 35, dtype=np.uint8)
+    cv2.putText(imagen, "Esperando senal de la camara...", (110, 230),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 210, 255), 2, cv2.LINE_AA)
+    cv2.putText(imagen, "Revisa que este conectada y que otra app no la use", (95, 265),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1, cv2.LINE_AA)
+    return cv2.imencode(".jpg", imagen)[1].tobytes()
+
+
 _instancia = None
 _lock_instancia = threading.Lock()
 

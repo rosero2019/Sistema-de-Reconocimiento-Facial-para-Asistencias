@@ -5,7 +5,12 @@
 - Procesamiento:   mejora de iluminación con CLAHE antes de detectar
 
 Este módulo no depende de Django, así se puede probar por separado.
+
+Los modelos de OpenCV no se pueden usar desde dos hilos a la vez: el video se
+procesa en un hilo y el registro de personas en otro. Por eso cada uso de los
+modelos pasa por un candado (lock).
 """
+import threading
 from pathlib import Path
 
 import cv2
@@ -28,21 +33,24 @@ class MotorFacial:
         )
         self.reconocedor = cv2.FaceRecognizerSF.create(str(ruta_reconocedor), "")
         self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        self._lock = threading.Lock()
 
     # ---------- Procesamiento ----------
     def mejorar_iluminacion(self, frame: np.ndarray) -> np.ndarray:
         """Ecualiza el brillo (canal L de LAB) para ambientes oscuros o con contraluz."""
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
-        l = self._clahe.apply(l)
+        with self._lock:
+            l = self._clahe.apply(l)
         return cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2BGR)
 
     # ---------- Detección ----------
     def detectar(self, frame: np.ndarray) -> np.ndarray:
         """Devuelve un arreglo (N, 15): x, y, w, h, 5 puntos faciales (x, y) y la confianza."""
         alto, ancho = frame.shape[:2]
-        self.detector.setInputSize((ancho, alto))
-        _, caras = self.detector.detect(frame)
+        with self._lock:
+            self.detector.setInputSize((ancho, alto))
+            _, caras = self.detector.detect(frame)
         if caras is None:
             return np.empty((0, 15), dtype=np.float32)
         return caras
@@ -50,8 +58,9 @@ class MotorFacial:
     # ---------- Reconocimiento ----------
     def extraer_vector(self, frame: np.ndarray, cara: np.ndarray) -> np.ndarray:
         """Alinea el rostro con los puntos faciales y devuelve su vector normalizado (128,)."""
-        alineado = self.reconocedor.alignCrop(frame, cara)
-        vector = self.reconocedor.feature(alineado).flatten().astype(np.float32)
+        with self._lock:
+            alineado = self.reconocedor.alignCrop(frame, cara)
+            vector = self.reconocedor.feature(alineado).flatten().astype(np.float32)
         return normalizar(vector)
 
 
